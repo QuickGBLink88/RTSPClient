@@ -1,0 +1,1 @@
+the project has dependency on ffmpeg, Just unzip the ffmpeg_include_lib.zip in this folder, then you will see the ffmpeg include and lib sub directory are created in the folder.
