@@ -75,6 +75,7 @@ char* strDupSize(char* str)
 	if (str == NULL) return NULL;
 	len = strlen(str) + 1;
 	copy = (char *)malloc(len*sizeof(char));
+    memset(copy, 0, len*sizeof(char));
 
 	return copy;
 }
@@ -671,7 +672,7 @@ int GetSpropParameterSets_h264(char * source, BYTE * out,int & outlen)
 	return index;
 }
 
-int GetSpropParameterSets_h265(char * source, BYTE * out,int & outlen)
+int GetSpropParameterSets_h265(char * source, BYTE * out,int & outlen, PayloadContext * pPayloadContext)
 {
 	
 	char str_tmp[4096] = {0};
@@ -688,14 +689,15 @@ int GetSpropParameterSets_h265(char * source, BYTE * out,int & outlen)
 		//	!strcmp(attr, "sprop-pps") || !strcmp(attr, "sprop-sei")) 
 		//{
 		//}
-
-		char head[3][32] = {"sprop-vps=", "sprop-sps=", "sprop-pps="};
+		char head[3][32] = {"sprop-vps=", "sprop-sps=", "sprop-pps=" };
 
 		for(int i=0; i<3; i++)
-		{
+		{	
 			const char * str_sprop = strstr(source, head[i]);
 			if(str_sprop == NULL)
 				return -1;
+	    
+			ret_len = 0;
 
 			if (str_sprop)
 			{
@@ -708,7 +710,7 @@ int GetSpropParameterSets_h265(char * source, BYTE * out,int & outlen)
 						str_tmp[i] = '\0';
 						break;
 					}
-					if ('\r' == str_tmp[i] || '\n' == str_tmp[i])
+					if(i < len-1 && str_tmp[i] == '\r' && str_tmp[i+1] == '\n')
 					{
 						str_tmp[i] = '\0';
 						break;
@@ -729,17 +731,35 @@ int GetSpropParameterSets_h265(char * source, BYTE * out,int & outlen)
 						index += ret_len;
 					}
 					sub = strtok_s(NULL,",", &out_ptr);
+				}//while(sub)
+			}//if (str_sprop)
+
+			if(ret_len > 0)
+			{
+				switch(i)
+				{
+				case 0:
+					pPayloadContext->vps = (uint8_t*)malloc(4 + ret_len);
+					pPayloadContext->vps_size = 4 + ret_len;
+					memcpy(pPayloadContext->vps, sub_out, ret_len);
+					break;
+				case 1:
+				    pPayloadContext->sps = (uint8_t*)malloc(4 + ret_len);
+					pPayloadContext->sps_size = 4 + ret_len;
+					memcpy(pPayloadContext->sps, sub_out, ret_len);
+					break;
+				case 2:
+					pPayloadContext->pps = (uint8_t*)malloc(4 + ret_len);
+					pPayloadContext->pps_size = 4 + ret_len;
+					memcpy(pPayloadContext->pps, sub_out, ret_len);
+					break;
 				}
 			}
 		}
-
 	}
 	outlen = index;
-	return index;
+	return outlen;
 }
-
-
-
 
 
 
@@ -795,6 +815,11 @@ RtspClient::RtspClient()
 
 	memset(m_sprop_parameter, 0, sizeof(m_sprop_parameter));
     m_sprop_len = 0;
+
+	memset(&m_PayloadContext, 0, sizeof(m_PayloadContext));
+
+	m_nptPlayBeginTime = 0;
+	m_nptPlayEndTime = 0;
 
 	m_video_rtp_id  = m_audio_rtp_id = 0; 
 	m_video_rtcp_id = m_audio_rtcp_id = 1; 
@@ -980,24 +1005,17 @@ int RtspClient::rtpHandler( unsigned char * buffer, unsigned int bytesRead, stru
 	unsigned rtpHdr;
 	int rtpMarkerBit;
 	unsigned long rtpTimestamp;
-	//static unsigned long LVrtpTimestamp = 0;
-	//static unsigned long LArtpTimestamp = 0;
 	unsigned rtpSSRC;
 	unsigned cc;
 	unsigned char payloadType = 0;
 	unsigned char rtcpType =0;
 	unsigned long subTime = 0;
-	//static unsigned long MaxFrameNum = 0;
-	//static unsigned long aloopNum = 0;
-	//static unsigned long audioFirstTimestamp = 0;
-	//static unsigned long videoFirstTimestamp = 0;
 
 	unsigned extHdr;
 	unsigned remExtSize;
 	unsigned numPaddingBytes;
 	unsigned short rtpSeqNo;
 	unsigned long time_inc;
-	//static unsigned subTimeFlag = 0;
     int nResult = 0;
 
 	unsigned int h264_startcode = 0x01000000;
@@ -1005,15 +1023,14 @@ int RtspClient::rtpHandler( unsigned char * buffer, unsigned int bytesRead, stru
 	memset(m_buffer2, 0, 1500);
 	int datasize2 = 0;
       
+	unsigned char * pRtpHead = buffer;
+
 	//注意： 以下循环总是执行一次
 	do 
 	{
 
 		datasize = bytesRead;   
 
-#if 0
-		rtp_unpackage_H264_to_file(buffer, datasize);
-#endif
 
 		// Check for the 12-byte RTP header:
 		if (datasize < 12) 
@@ -1050,34 +1067,38 @@ int RtspClient::rtpHandler( unsigned char * buffer, unsigned int bytesRead, stru
 		buffer = skip(buffer,cc);
 		datasize-=cc;
 		
-		// header extension
-		if (rtpHdr&0x10000000) 
-		{
-			if (datasize < 4) 
-				break;
-			extHdr = ntohl(*(unsigned*)(buffer)); 
-			buffer = skip(buffer,4);
-			datasize -=4;
-			remExtSize = 4*(extHdr&0xFFFF);
-			if (datasize < remExtSize) 
-				break;
-			buffer = skip(buffer,remExtSize);
-			datasize -= remExtSize;
-		}
-    
-		// padding bytes
-		if (rtpHdr&0x20000000) 
-		{
-			if (datasize == 0) 
-				break;
-			numPaddingBytes	= (unsigned)(buffer)[datasize-1];
-			if (datasize < numPaddingBytes) 
-				break;
-			if (numPaddingBytes > datasize) 
-				numPaddingBytes = datasize;
-			buffer = skip(buffer, numPaddingBytes);
-			datasize -= numPaddingBytes;
-		}    
+		//// header extension
+		//if (rtpHdr&0x10000000) 
+		//{
+		//	if (datasize < 4) 
+		//		break;
+		//	extHdr = ntohl(*(unsigned*)(buffer)); 
+		//	buffer = skip(buffer,4);
+		//	datasize -=4;
+		//	remExtSize = 4*(extHdr&0xFFFF);
+		//	if (datasize < remExtSize) 
+		//		break;
+		//	buffer = skip(buffer,remExtSize);
+		//	datasize -= remExtSize;
+		//}
+  //  
+		//// padding bytes
+		//if (rtpHdr&0x20000000) 
+		//{
+		//	if (datasize == 0) 
+		//		break;
+		//	numPaddingBytes	= (unsigned)(buffer)[datasize-1];
+		//	if (datasize < numPaddingBytes) 
+		//		break;
+		//	if (numPaddingBytes > datasize) 
+		//		numPaddingBytes = datasize;
+		//	buffer = skip(buffer, numPaddingBytes);
+		//	datasize -= numPaddingBytes;
+		//}    
+
+		
+		buffer = pRtpHead + 12;
+		datasize = bytesRead - 12;
 
 		rtcpType = (unsigned char)((rtpHdr&0xFF0000)>>16);
 
@@ -1344,14 +1365,16 @@ int RtspClient::rtpHandler( unsigned char * buffer, unsigned int bytesRead, stru
 				break;
 			case AFMT_PCM_ULAW:
 				break;
+			case AFMT_PCM_ALAW:
+				break;
 			case AFMT_AMR:
-				nResult = rtp_unpackage_AMR(buffer,datasize,  m_buffer2, &datasize2);
+				nResult = rtp_unpackage_AMR(buffer,datasize,  m_buffer2, sizeof(m_buffer2), &datasize2);
 				break;
 			case AFMT_AAC:
-				nResult = rtp_unpackage_AAC(buffer,datasize, rtpMarkerBit, m_Attribute.fAudioFrequency, m_buffer2, &datasize2);
+				nResult = rtp_unpackage_AAC(buffer,datasize, rtpMarkerBit, m_Attribute.fAudioFrequency, m_buffer2, sizeof(m_buffer2), &datasize2);
 				break;
 			case AFMT_MP3:
-				nResult = rtp_unpackage_MP3(buffer,datasize,  m_buffer2, &datasize2);
+				nResult = rtp_unpackage_MP3(buffer,datasize,  m_buffer2, sizeof(m_buffer2), &datasize2);
 				break;
 			default:
 				break;
@@ -1650,39 +1673,38 @@ char * RtspClient::parseSDPAttribute_fmtp(char* sdpLine)
 
  MediaAttribute * RtspClient::SetMediaAttrbute(struct MediaAttribute *Attribute,struct MediaSubsession * subsessionHead,int subsessionNum)
 {
-	int fd,size;
-	//FILE *fd;
-	struct MediaSubsession *mediasub;
+
+	struct MediaSubsession *mediasub = NULL;
 	mediasub = subsessionHead;
 
 	while(subsessionNum>0)
 	{
-		if(stricmp(mediasub->fCodecName,"H264") == 0)
-		{
-			Attribute->fVideoFormat = VFMT_H264;
-		}
-		else if(stricmp(mediasub->fCodecName,"MP4V-ES") == 0)
-		{
-			Attribute->fVideoFormat = VFMT_MPEG4;
-		}
-	    else if(stricmp(mediasub->fCodecName, "HEVC") == 0 ||
-		      stricmp(mediasub->fCodecName, "H265") == 0)
-		{
-			Attribute->fVideoFormat = VFMT_H265;
-		}
-
-		if(Attribute->fVideoFormat == VFMT_H264 || 
-		   Attribute->fVideoFormat == VFMT_MPEG4 || 
-		   Attribute->fVideoFormat == VFMT_H265
+		if(_tcsicmp(mediasub->fCodecName,"H264") == 0 ||
+			_tcsicmp(mediasub->fCodecName,"MP4V-ES") == 0 ||
+			_tcsicmp(mediasub->fCodecName, "HEVC") == 0 ||
+			_tcsicmp(mediasub->fCodecName, "H265") == 0
 			)
 		{	
+			if(_tcsicmp(mediasub->fCodecName,"H264") == 0)
+			{
+				Attribute->fVideoFormat = VFMT_H264;
+			}
+			else if(_tcsicmp(mediasub->fCodecName,"MP4V-ES") == 0)
+			{
+				Attribute->fVideoFormat = VFMT_MPEG4;
+			}
+			else if(_tcsicmp(mediasub->fCodecName, "HEVC") == 0 ||
+				  _tcsicmp(mediasub->fCodecName, "H265") == 0)
+			{
+				Attribute->fVideoFormat = VFMT_H265;
+			}
 
 			VTimestampFrequency = mediasub->frtpTimestampFrequency;
 			VPayloadType = mediasub->fRTPPayloadFormat;
 
 			Attribute->fVideoFrequency = mediasub->frtpTimestampFrequency;
 			Attribute->fVideoPayloadFormat = mediasub->fRTPPayloadFormat;
-			Attribute->fVideoWidth = mediasub->fWidth; //获得分辨率
+			Attribute->fVideoWidth = mediasub->fWidth;
 			Attribute->fVideoHeight = mediasub->fHeight;
 
 			if( mediasub->fConfig !=NULL)
@@ -1727,27 +1749,37 @@ char * RtspClient::parseSDPAttribute_fmtp(char* sdpLine)
 
 		}
 		
-		else if(stricmp(mediasub->fCodecName,"MPA") == 0||
-			stricmp(mediasub->fCodecName,"mpeg4-generic") == 0||
-			stricmp(mediasub->fCodecName,"L16") == 0 ||
-			stricmp(mediasub->fCodecName, "AMR") == 0
+		else if(_tcsicmp(mediasub->fCodecName,"MPA") == 0
+			|| _tcsicmp(mediasub->fCodecName,"mpeg4-generic") == 0
+			|| _tcsicmp(mediasub->fCodecName,"L16") == 0 
+			|| _tcsicmp(mediasub->fCodecName, "AMR") == 0 
+			|| _tcsicmp(mediasub->fCodecName, "PCMA") == 0
+			|| _tcsicmp(mediasub->fCodecName, "PCMU") == 0
 			)
 		{	
 			ATimestampFrequency = mediasub->frtpTimestampFrequency;
 			APayloadType = mediasub->fRTPPayloadFormat;
 
-			if(stricmp(mediasub->fCodecName,"MPA") == 0)
+			if(_tcsicmp(mediasub->fCodecName,"MPA") == 0)
 			{
 				Attribute->fAudioFormat = AFMT_MP3;
 			}
-			else if(stricmp(mediasub->fCodecName,"mpeg4-generic") == 0)
+			else if(_tcsicmp(mediasub->fCodecName,"mpeg4-generic") == 0)
 			{
 				Attribute->fAudioFormat = AFMT_AAC;
 			}
-			else if(stricmp(mediasub->fCodecName, "AMR") == 0)
+			else if(_tcsicmp(mediasub->fCodecName, "AMR") == 0)
 			{
 				Attribute->fAudioFormat = AFMT_AMR;
 				ASSERT(mediasub->fNumChannels == 1);
+			}
+			else if(_tcsicmp(mediasub->fCodecName, "PCMA") == 0)
+			{
+				Attribute->fAudioFormat = AFMT_PCM_ALAW;
+			}
+			else if (_tcsicmp(mediasub->fCodecName, "PCMU") == 0)
+			{
+				Attribute->fAudioFormat = AFMT_PCM_ULAW;
 			}
 
 			Attribute->fAudioFrequency = mediasub->frtpTimestampFrequency; //音频采样率
@@ -1859,20 +1891,6 @@ MediaSubsession *  RtspClient::initializeWithSDP(char* sdpDescription,int *Subse
 			if ((CodecName = parseSDPAttribute_rtpmap(sdpLine,&(subsession->frtpTimestampFrequency),&(subsession->fNumChannels)))!=NULL)
 			{
 				subsession->fCodecName = strDup(CodecName);
-				
-				//if(stricmp(CodecName,"H264") == 0||stricmp(CodecName,"MP4V-ES") == 0)
-				//{	
-				//	VTimestampFrequency = subsession->frtpTimestampFrequency;
-				//	VPayloadType = subsession->fRTPPayloadFormat;
-				//}
-				//else if(stricmp(CodecName,"MPA") == 0||
-				//	stricmp(CodecName,"mpeg4-generic") == 0||
-				//	stricmp(CodecName,"L16") == 0 ||
-				//	stricmp(CodecName, "AMR") == 0)
-				//{	
-				//	ATimestampFrequency = subsession->frtpTimestampFrequency;
-				//	APayloadType = subsession->fRTPPayloadFormat;
-				//}
 
 				free(CodecName);
 				continue;
@@ -1898,17 +1916,16 @@ MediaSubsession *  RtspClient::initializeWithSDP(char* sdpDescription,int *Subse
 		   {
 			   //从sprop-parameter-sets=字段中提取SPS内容
 	
-				if(	GetSpropParameterSets_h264((char*)sdpLine, m_sprop_parameter, m_sprop_len) > 0||
-					GetSpropParameterSets_h265((char*)sdpLine, m_sprop_parameter, m_sprop_len) > 0 )
+				if(	GetSpropParameterSets_h264((char*)sdpLine, m_sprop_parameter, m_sprop_len) > 0)
 				{
-					TRACE("GetSpropParameterSets return len: %d \n", m_sprop_len);
+					TRACE("GetSpropParameterSets_h264 return len: %d \n", m_sprop_len);
 
 					//FILE * file = fopen("d:\\sps.dat","ab" );
 					//fwrite(m_sprop_parameter, 1, m_sprop_len, file);
 					//fclose(file);
 
-
-					if(m_sprop_parameter[0]==0 && m_sprop_parameter[1]==0 && m_sprop_parameter[2]==0  && m_sprop_parameter[3] == 0x01) //检查开头4个字节是不是H264开始码
+				
+					if(m_sprop_parameter[0]==0 && m_sprop_parameter[1]==0 && m_sprop_parameter[2]==0  && m_sprop_parameter[3] == 0x01) //检查前4个字节是否是H264开始码
 					{
 
 					}
@@ -1916,9 +1933,22 @@ MediaSubsession *  RtspClient::initializeWithSDP(char* sdpDescription,int *Subse
 					subsession->fWidth = subsession->fHeight = 0;
 
 					SpsDecodeParser spsParser;
-					spsParser.h264_decode_sps( m_sprop_parameter+4, m_sprop_len-4, subsession->fWidth, subsession->fHeight); //从SPS中拿到视频分辨率 
+					spsParser.h264_decode_sps( m_sprop_parameter+4, m_sprop_len-4, subsession->fWidth, subsession->fHeight); //从SPS中拿到视频分辨率
 
 					TRACE("h264_decode_sps, fWidth = %d, fHeight = %d \n", subsession->fWidth, subsession->fHeight);
+				}
+				else if(GetSpropParameterSets_h265((char*)sdpLine, m_sprop_parameter, m_sprop_len, &m_PayloadContext) > 0 )
+				{
+					TRACE("GetSpropParameterSets_h265 return len: %d \n", m_sprop_len);
+
+					subsession->fWidth = subsession->fHeight = 0;
+					
+					vc_params_t params = {0};
+					ParseSequenceParameterSet(m_PayloadContext.sps, m_PayloadContext.sps_size, params);
+					TRACE("H265 sps, width: %d, height: %d, profile: %d, level: %d\n", params.width, params.height, params.profile, params.level);
+
+					subsession->fWidth = params.width;
+					subsession->fHeight = params.height;
 				}
 		   }
 
@@ -2357,7 +2387,7 @@ int RtspClient::openConnectionFromURL(char* url)
 	   if(m_bStopThread)
 		   break;
 
-		if( netRTSPConnect(fSocketNum, inet_addr(address), destPortNum, 1) != 0)  //连接失败
+		if( netRTSPConnect(fSocketNum, inet_addr(address), destPortNum, 2) != 0)  //连接失败
 		{
 			fprintf(stderr,"connect() failed\n");
 			
@@ -2669,6 +2699,114 @@ int RtspClient::setupMediaSubsession(struct MediaSubsession* subsession,int subs
 }
 
 ///////////////////////////////
+
+int RtspClient::pauseMediaSession()
+{
+	char cmd[2048] = {0};
+
+	//unsigned cmdSize;
+	unsigned readBufSize = 10000;
+	char* readBuffer; 
+	char* readBuf;
+	int bytesRead;
+	char* firstLine;
+	unsigned responseCode;
+	readBuffer = (char*)malloc(sizeof(char)*(readBufSize+1));
+	if(readBuffer == NULL) return -1;
+	memset(readBuffer,0,readBufSize+1);
+
+	do 
+	{
+		// First, make sure that we have a RTSP session in progress
+		if (strlen(fLastSessionId) == 0) 
+		{
+			fprintf(stderr,"No RTSP session is currently in progress\n");
+			break;
+		}
+		
+		// Send the PAUSE command:
+		
+		// First, construct an authenticator string:
+		
+		memset(cmd,0, sizeof(cmd));
+
+		if(!m_bUserAuth)
+		{
+			char cmdFmt[] =
+				"PAUSE %s/ RTSP/1.0\r\n"
+				"CSeq: %d\r\n"
+				"Session: %s\r\n"
+				"%s\r\n";
+
+			sprintf(cmd, cmdFmt,
+				fBaseURL,
+				//subsession->fControlPath,
+				++fCSeq,
+				fLastSessionId,
+				UserAgentHeaderStr);
+		}
+		else
+		{
+			char cmdFmt[] =
+			"PAUSE %s/ RTSP/1.0\r\n"
+			"CSeq: %d\r\n"
+			"Session: %s\r\n"
+			"%s"
+			"%s\r\n";
+
+			char StrAuth[1024] = {0};
+			GetAuthor( m_realm, m_nonce, m_authType, m_username, m_password, fBaseURL, StrAuth, "PAUSE");
+
+			sprintf(cmd, cmdFmt,
+				fBaseURL,
+				//subsession->fControlPath,
+				++fCSeq,
+				fLastSessionId,
+				UserAgentHeaderStr,
+				StrAuth);
+		}
+
+
+		fprintf(stderr,"PAUSE command-%d:\n%s\n",fCSeq,cmd);
+		
+		if (send(m_socketNum,cmd,strlen(cmd),0)<0) 
+		{
+			fprintf(stderr,"PAUSE send() failed!\n ");
+			break;
+		}
+		
+		// Get the response from the server:
+		readBuf = readBuffer;
+		bytesRead = getResponse(readBuf, readBufSize);
+
+		if (bytesRead <= 0) break;
+		
+		fprintf(stderr,"bytesRead is %d\n",bytesRead);
+		fprintf(stderr,"PAUSE response-%d:\n%s\n",fCSeq,readBuf);
+		
+		 // Inspect the first line to check whether it's a result code 200
+		firstLine = readBuf;
+		/*char* nextLineStart =*/ getLine(firstLine);
+		
+		if (parseResponseCode(firstLine,&responseCode)) break;
+		
+		if (responseCode != 200) 
+		{
+			fprintf(stderr,"cannot handle PAUSE response\n ");
+			break;
+		}
+		// (Later, check "CSeq" too #####)
+		
+		free(readBuffer);
+		fprintf(stderr,"Pause Streams successful\n");
+		return 0;
+	} while (0);
+	
+	free(readBuffer);
+	fprintf(stderr,"Pause Streams failed\n");
+	return -1;
+}
+
 void RtspClient::resumeStreams()
 {
 	//double start;
@@ -2685,7 +2823,45 @@ void RtspClient::resumeStreams()
 	fprintf(stderr,"Play Streams successful\n");
 }
 
-int RtspClient::playMediaSession(int start,int end)//double start, double end)
+int RtspClient::parsePlayStartEndTime(char* sdpLine) 
+{
+	int parseSuccess = -1;
+	char rangeStr[64] = {0};
+	char playBeginTime[32] = {0};
+	char playEndTime[32] = {0};
+
+	int index = 0;
+	int j = 0;
+
+
+	//"Range: npt=0.00000-2732.48400"
+	if (sscanf(sdpLine, "Range: npt=%s", rangeStr)==1) 
+	{
+		char * p = strchr(rangeStr, '-');
+		if(p == NULL)
+			return -1;
+
+		strncpy(playBeginTime, rangeStr, p-rangeStr);
+		playBeginTime[p-rangeStr] = '\0';
+
+		strcpy(playEndTime, p+1);
+
+		float fBeginNtp, fEndNtp;
+		fBeginNtp = atof(playBeginTime);
+		fEndNtp   = atof(playEndTime);
+
+		m_nptPlayBeginTime = (int)fBeginNtp;
+		m_nptPlayEndTime = (int)fEndNtp;
+
+		parseSuccess = 0;
+
+		TRACE("Ntp time range is %lu-%lu\n",m_nptPlayBeginTime, m_nptPlayEndTime);
+	}
+
+	return parseSuccess;
+}
+
+int RtspClient::playMediaSession(int start,int end)
 {
 
 	char startStr[30], endStr[30];
@@ -2802,6 +2978,25 @@ int RtspClient::playMediaSession(int start,int end)//double start, double end)
 			break;
 		}
 		
+
+		char*  sdpLine = nextLineStart;
+		char* nextSDPLine = NULL;
+
+		while (1) 
+		{
+			if ((nextSDPLine = getLine(sdpLine)) == NULL)
+			{
+				break;		
+			}
+
+			if (parsePlayStartEndTime(sdpLine) == 0) 
+				break;//check a=range:npt=
+
+			sdpLine = nextSDPLine;
+			if (sdpLine == NULL) break; 
+			
+		}
+
 		free(readBuffer);
 		return 0;
 	} while (0);
@@ -3042,10 +3237,12 @@ int RtspClient::SendOptionsCmd(bool bNotWaitForResponse)
 	unsigned responseCode;
 	int nSendBytes = 0;
 	int nCmdLen = 0;
+	int nRet = -1;
 
 	readBuffer = (char*)malloc(sizeof(char)*(readBufSize+1));
 	if(readBuffer == NULL) return -1;
 	memset(readBuffer,0,readBufSize+1);
+	
 	
 	do 
 	{
@@ -3116,6 +3313,39 @@ int RtspClient::SendOptionsCmd(bool bNotWaitForResponse)
 			if (responseCode != 200) 
 			{
 				fprintf(stderr,"cannot handle Options response\n ");
+				if (responseCode == 404)
+					nRet = -2;
+				else if (responseCode == 401)
+				{
+					nRet = -3;
+
+					char* lineStart;
+
+					while (1)
+					{
+						char * pChar = NULL;
+
+						lineStart = nextLineStart;
+						if (lineStart == NULL || lineStart[0] == '\0') break;
+
+						nextLineStart = getLine(lineStart);
+
+						pChar = strstr(lineStart, "WWW-Authenticate:");
+						if (pChar != NULL)
+						{
+							m_authType = GetAuthParam((char*)lineStart, m_realm, m_nonce);
+						}
+
+					}
+
+					if (m_authType == 1 || m_authType == 2)
+					{
+						m_bUserAuth = TRUE;
+					}
+
+				}
+				else
+					nRet = -4;
 				break;
 			}
 	   }
@@ -3125,117 +3355,11 @@ int RtspClient::SendOptionsCmd(bool bNotWaitForResponse)
 	} while (0);
 	
 	free(readBuffer);
-	return -1;
+	return nRet;
 }
 
-////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////
-int RtspClient::pauseMediaSession()
-{
-	char cmd[2048] = {0};
+////////////////////////////////////////////////////////////////////
 
-	//unsigned cmdSize;
-	unsigned readBufSize = 10000;
-	char* readBuffer; 
-	char* readBuf;
-	int bytesRead;
-	char* firstLine;
-	unsigned responseCode;
-	readBuffer = (char*)malloc(sizeof(char)*(readBufSize+1));
-	if(readBuffer == NULL) return -1;
-	memset(readBuffer,0,readBufSize+1);
-
-	do 
-	{
-		// First, make sure that we have a RTSP session in progress
-		if (strlen(fLastSessionId) == 0) 
-		{
-			fprintf(stderr,"No RTSP session is currently in progress\n");
-			break;
-		}
-		
-		// Send the PAUSE command:
-		
-		// First, construct an authenticator string:
-		
-		memset(cmd,0, sizeof(cmd));
-
-		if(!m_bUserAuth)
-		{
-			char cmdFmt[] =
-				"PAUSE %s/ RTSP/1.0\r\n"
-				"CSeq: %d\r\n"
-				"Session: %s\r\n"
-				"%s\r\n";
-
-			sprintf(cmd, cmdFmt,
-				fBaseURL,
-				//subsession->fControlPath,
-				++fCSeq,
-				fLastSessionId,
-				UserAgentHeaderStr);
-		}
-		else
-		{
-			char cmdFmt[] =
-			"PAUSE %s/ RTSP/1.0\r\n"
-			"CSeq: %d\r\n"
-			"Session: %s\r\n"
-			"%s"
-			"%s\r\n";
-
-			char StrAuth[1024] = {0};
-			GetAuthor( m_realm, m_nonce, m_authType, m_username, m_password, fBaseURL, StrAuth, "PAUSE");
-
-			sprintf(cmd, cmdFmt,
-				fBaseURL,
-				//subsession->fControlPath,
-				++fCSeq,
-				fLastSessionId,
-				UserAgentHeaderStr,
-				StrAuth);
-		}
-
-
-		fprintf(stderr,"PAUSE command-%d:\n%s\n",fCSeq,cmd);
-		
-		if (send(m_socketNum,cmd,strlen(cmd),0)<0) 
-		{
-			fprintf(stderr,"PAUSE send() failed!\n ");
-			break;
-		}
-		
-		// Get the response from the server:
-		readBuf = readBuffer;
-		bytesRead = getResponse(readBuf, readBufSize);
-
-		if (bytesRead <= 0) break;
-		
-		fprintf(stderr,"bytesRead is %d\n",bytesRead);
-		fprintf(stderr,"PAUSE response-%d:\n%s\n",fCSeq,readBuf);
-		
-		 // Inspect the first line to check whether it's a result code 200
-		firstLine = readBuf;
-		/*char* nextLineStart =*/ getLine(firstLine);
-		
-		if (parseResponseCode(firstLine,&responseCode)) break;
-		
-		if (responseCode != 200) 
-		{
-			fprintf(stderr,"cannot handle PAUSE response\n ");
-			break;
-		}
-		// (Later, check "CSeq" too #####)
-		
-		free(readBuffer);
-		fprintf(stderr,"Pause Streams successful\n");
-		return 0;
-	} while (0);
-	
-	free(readBuffer);
-	fprintf(stderr,"Pause Streams failed\n");
-	return -1;
-}
 
 
 ///////////////////////////////////////////////////////////////////
@@ -3411,6 +3535,11 @@ BOOL RtspClient::OpenStream(const char * szURL)
 	memset(&m_video_rtcp_packet, 0, sizeof(m_video_rtcp_packet));
 	memset(&m_audio_rtcp_packet, 0, sizeof(m_audio_rtcp_packet));
 
+	memset(&m_PayloadContext, 0, sizeof(m_PayloadContext));
+
+	m_nptPlayBeginTime = 0;
+	m_nptPlayEndTime = 0;
+
 	/////////////////////////
 	m_bStopThread = FALSE;
 
@@ -3456,6 +3585,16 @@ void RtspClient::CloseStream()
 	//将流类型复位
 	VPayloadType = 0;
 	APayloadType = 0;
+
+	if(m_PayloadContext.sps)
+	{
+		free(m_PayloadContext.sps);
+		free(m_PayloadContext.pps);
+		free(m_PayloadContext.vps);
+		free(m_PayloadContext.sei);
+
+		memset(&m_PayloadContext, 0, sizeof(m_PayloadContext));
+	}
 }
 
 
@@ -3512,7 +3651,7 @@ BOOL  RtspClient::GetVideoSize(int & nWidth, int & nHeight)
 // total_bytes -- 提取的数据大小
 //返回值： 返回total_bytes
 //
-int RtspClient::rtp_unpackage_H264(unsigned char *recvbuf, int len, BOOL & marker, int & nIDR, unsigned char * outbuf, int & total_bytes, int nSeqNo)
+int RtspClient::rtp_unpackage_H264(unsigned char *recvbuf, int len, BOOL & marker, int & nIDR, unsigned char * outbuf, const int nBufSize, int & total_bytes, int nSeqNo)
 {
 
     NALU_HEADER * nalu_hdr = NULL;
@@ -3746,7 +3885,7 @@ int RtspClient::rtp_unpackage_H264(unsigned char *recvbuf, int len, BOOL & marke
 //返回：1:表示一帧结束  0:帧未结束. 一般AAC音频包比较小，没有分片，所以应该每次都返回1。
 ////  一个RTP包里面可能包含有多个音频帧，但该函数没有返回每个帧的信息，所以需要一个中间变量记录每个帧的偏移量、长度信息
 //
-int RtspClient::rtp_unpackage_AAC(unsigned char * bufIn, int len, BOOL  marker, int audioSamprate, unsigned char* pBufOut,  int* pOutLen)
+int RtspClient::rtp_unpackage_AAC(unsigned char * bufIn, int len, BOOL  marker, int audioSamprate, unsigned char* pBufOut, const int nBufSize, int* pOutLen)
 {
 	//TRACE("AAC Header: %02x%02x%02x%02x \n", bufIn[0], bufIn[1], bufIn[2], bufIn[3]);
 
@@ -3829,6 +3968,9 @@ int RtspClient::rtp_unpackage_AAC(unsigned char * bufIn, int len, BOOL  marker, 
 			ADTS[5] = ((framelen+header) & 0x0007) << 5;
 			ADTS[5] |= 0x1F;
 
+			if (*pOutLen + framelen + header > nBufSize)
+				break;
+
 			memcpy(pBufDest, ADTS, sizeof(ADTS));
 			memcpy(pBufDest+header, pBufSrc, framelen);
 
@@ -3903,7 +4045,7 @@ int WriteAdtsHeader(unsigned char* adts_headerbuf, unsigned int  framelen)
 
 
 //  参考FFmpeg的rtpdec_amr.c文件关于解析AMR RTP包的实现
-int  RtspClient::rtp_unpackage_AMR(unsigned char * bufIn, int len,  unsigned char* pBufOut,  int* pOutLen)
+int  RtspClient::rtp_unpackage_AMR(unsigned char * bufIn, int len,  unsigned char* pBufOut, const int nBufSize, int* pOutLen)
 {
 	int total_bytes = 0;                 //当前包传出的数据
 	int fwrite_number = 0;               //存入文件的数据长度
@@ -3959,6 +4101,8 @@ int  RtspClient::rtp_unpackage_AMR(unsigned char * bufIn, int len,  unsigned cha
 		audioSlice.pos = ptr - pBufOut;
 		m_vAudioFrameSlices.push_back(audioSlice); //记录从这个RTP包提取到的所有帧的位移和大小信息
 		//////////////////////////////////////
+		if (ptr - pBufOut + 1 + frame_size > nBufSize)
+			break;
 
 		*ptr++ = toc & 0x7C;
 		memcpy(ptr, speech_data, frame_size);
@@ -3989,14 +4133,17 @@ int  RtspClient::rtp_unpackage_AMR(unsigned char * bufIn, int len,  unsigned cha
     return 1;
 }
 
-int  RtspClient::rtp_unpackage_MP3(unsigned char * bufIn, int len, unsigned char* pBufOut,  int* pOutLen)
+int  RtspClient::rtp_unpackage_MP3(unsigned char * bufIn, int len, unsigned char* pBufOut, const int nBufSize, int* pOutLen)
 {
 	int fwrite_number = 0;   //存入文件的数据长度
 
 	//fwrite_number = fwrite(bufIn + 4, 1, len - 4, poutfile);
 
-	memcpy(pBufOut, bufIn+4, len-4);
-	*pOutLen = len-4;
+	if (len - 4 < nBufSize)
+	{
+		memcpy(pBufOut, bufIn + 4, len - 4);
+		*pOutLen = len - 4;
+	}
     return 1;
 }
 
@@ -4079,9 +4226,21 @@ int RtspClient::RtspThreadProc()
 	result = SendOptionsCmd(false); //发送一个Options请求
 	if (result<0) 
 	{
-		TRACE("Failed to receive Option response \n");
-		clearup();
-		return (-1);
+		TRACE("receive error Option response \n");
+
+		if (result == -2) //返回404错误，流名称不存在
+		{
+			clearup();
+			return (-1);
+		}
+		else if (result == -3) //未发送认证信息，这个不属于错误，后面发送DESCRIBE指令的时候会发送认证信息
+		{
+		}
+		else
+		{
+			clearup();
+			return (-1);
+		}
 	}
 
 	sdpDescription = (char*)malloc(MAX_READBUFSIZE*sizeof(char));
@@ -4523,3 +4682,50 @@ __int64 RtspClient:: GetAudioNtpTime(unsigned int rtpTimestamp)
 	return ntpTime;
 }
 #endif
+
+//获取视频帧的播放时间，时间单位是毫秒
+unsigned int   RtspClient::GetVideoTimeOffset(unsigned int rtpTimestamp)
+{
+	if(VTimestampFrequency == 0)
+		return 0;
+
+	unsigned int  offset = (__int64)m_nptPlayBeginTime*1000 + (__int64)(rtpTimestamp - videoFirstTimestamp)*1000/ (__int64)VTimestampFrequency;
+	return offset;
+}
+
+//获取音频帧的播放时间，时间单位是毫秒
+unsigned int   RtspClient::GetAudioTimeOffset(unsigned int rtpTimestamp)
+{
+	if (ATimestampFrequency == 0)
+		return 0;
+
+	unsigned int  offset = (__int64)m_nptPlayBeginTime * 1000 + (__int64)(rtpTimestamp - audioFirstTimestamp) * 1000 / (__int64)ATimestampFrequency;
+	return offset;
+}
+
+//获取当前视频帧的播放时间，时间单位是毫秒
+unsigned int   RtspClient::GetVideoTimeOffset()
+{
+	if (VTimestampFrequency == 0)
+		return 0;
+
+	unsigned int  offset = (__int64)m_nptPlayBeginTime * 1000 + (__int64)(LVrtpTimestamp - videoFirstTimestamp) * 1000 / (__int64)VTimestampFrequency;
+	return offset;
+}
+
+//获取当前音频帧的播放时间，时间单位是毫秒
+unsigned int   RtspClient::GetAudioTimeOffset()
+{
+	if (ATimestampFrequency == 0)
+		return 0;
+
+	unsigned int  offset = (__int64)m_nptPlayBeginTime * 1000 + (__int64)(LArtpTimestamp - audioFirstTimestamp) * 1000 / (__int64)ATimestampFrequency;
+	return offset;
+}
+
+//获取播放起点时间，单位：毫秒
+unsigned int   RtspClient::GetTimeBase()
+{
+	unsigned int  offset = m_nptPlayBeginTime * 1000;
+	return offset;
+}

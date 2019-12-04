@@ -1,12 +1,12 @@
+//
+// h264.cpp
+//
 /*
 对H264、H265的RTP包组帧，提取NALU单元
-该文件的函数拷贝于FFmpeg源码文件：rtpdec_h264.c, rtpdec_hevc.c
+大部分函数提取于FFmpeg的rtpdec_h264.c, rtpdec_hevc.c文件
 */
-
 #include "stdafx.h"
 #include "h264.h"
-
-const bool using_donl_field = 0;
 
 #define COUNT_NAL_TYPE(data, nal) do { } while (0)
 
@@ -31,7 +31,6 @@ static const uint8_t start_sequence[] = { 0, 0, 0, 1 };
 
 int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf, int & outlen)
 {
-	BOOL  bFrameEnd;
     uint8_t nal;
     uint8_t type;
     int result = 1;
@@ -60,7 +59,6 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
 
 		nIDR = (nal & 0x1f);
        // COUNT_NAL_TYPE(data, nal);
-		bFrameEnd = 1;
         break;
 
     case 24:                   // STAP-A (one packet, multiple nals)
@@ -125,8 +123,6 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
                     assert(dst - outbuf == total_length);
                 }
             }//for
-
-			bFrameEnd = 1;
         }
         break;
 
@@ -162,12 +158,8 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
 
 			nIDR = nal_type;
 
-			if(end_bit)
-				bFrameEnd = 1;
-
             if (start_bit){
                 //COUNT_NAL_TYPE(data, nal_type);
-				bFrameEnd = 0;
 			}
             if (start_bit) {
                 /* copy in the start sequence, and the reconstructed nal */
@@ -197,7 +189,7 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
 }
 
 
- int ff_h264_handle_aggregated_packet( int & nIDR, uint8_t * outbuf, int & outlen,
+int ff_h264_handle_aggregated_packet( int & nIDR, uint8_t * outbuf, int & outlen,
                                      const uint8_t *buf, int len,
                                      int skip_between, int *nal_counters,
                                      int nal_mask)
@@ -257,7 +249,7 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
     return outlen;
 }
 
- int ff_h264_handle_frag_packet(int & nIDR, uint8_t * outbuf, int & outlen,
+int ff_h264_handle_frag_packet(int & nIDR, uint8_t * outbuf, int & outlen,
 							   const uint8_t *buf, int len,
                                int start_bit, const uint8_t *nal_header,
                                int nal_header_len)
@@ -282,7 +274,7 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
     return outlen;
 }
 
- int h264_handle_packet_fu_a(int & nIDR, uint8_t * outbuf, int & outlen,
+int h264_handle_packet_fu_a(int & nIDR, uint8_t * outbuf, int & outlen,
                                    const uint8_t *buf, int len,
                                    int *nal_counters, int nal_mask)
 {
@@ -310,7 +302,7 @@ int h264_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
     return ff_h264_handle_frag_packet(nIDR, outbuf, outlen, buf, len, start_bit, &nal, 1);
 }
 
-
+const bool using_donl_field = 0;
 
 int hevc_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf, int & outlen)
 {
@@ -390,7 +382,7 @@ int hevc_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
         /* A/V packet: copy NAL unit data */
         memcpy(outbuf + sizeof(start_sequence), buf, len);
 
-		TRACE("single nal_type: %d \n", nal_type);
+		//TRACE("single nal_type: %d \n", nal_type);
 	
 		nIDR = nal_type;
 		
@@ -466,7 +458,7 @@ int hevc_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
             return 0;
         }
 
-		TRACE("fu_type = %d \n", fu_type);
+		//TRACE("fu_type = %d \n", fu_type);
 
         new_nal_header[0] = (rtp_pl[0] & 0x81) | (fu_type << 1);
         new_nal_header[1] = rtp_pl[1];
@@ -486,4 +478,94 @@ int hevc_handle_packet(const uint8_t *buf, int len, int & nIDR, uint8_t * outbuf
 
 
     return res;
+}
+
+
+bool  ParseSequenceParameterSet(BYTE* data,int size, vc_params_t& params)
+{
+	if (size < 20)
+	{ 
+		return false;
+	}
+
+
+	NALBitstream bs(data, size);
+
+
+	// seq_parameter_set_rbsp()
+	bs.GetWord(4);// sps_video_parameter_set_id
+	int sps_max_sub_layers_minus1 = bs.GetWord(3); // "The value of sps_max_sub_layers_minus1 shall be in the range of 0 to 6, inclusive."
+	if (sps_max_sub_layers_minus1 > 6) 
+	{
+		return false;
+	}
+	bs.GetWord(1);// sps_temporal_id_nesting_flag
+	// profile_tier_level( sps_max_sub_layers_minus1 )
+	{
+		bs.GetWord(2);// general_profile_space
+		bs.GetWord(1);// general_tier_flag
+		params.profile = bs.GetWord(5);// general_profile_idc
+		bs.GetWord(32);// general_profile_compatibility_flag[32]
+		bs.GetWord(1);// general_progressive_source_flag
+		bs.GetWord(1);// general_interlaced_source_flag
+		bs.GetWord(1);// general_non_packed_constraint_flag
+		bs.GetWord(1);// general_frame_only_constraint_flag
+		bs.GetWord(44);// general_reserved_zero_44bits
+		params.level   = bs.GetWord(8);// general_level_idc
+		uint8_t sub_layer_profile_present_flag[6] = {0};
+		uint8_t sub_layer_level_present_flag[6]   = {0};
+		for (int i = 0; i < sps_max_sub_layers_minus1; i++) {
+			sub_layer_profile_present_flag[i]= bs.GetWord(1);
+			sub_layer_level_present_flag[i]= bs.GetWord(1);
+		}
+		if (sps_max_sub_layers_minus1 > 0) {
+			for (int i = sps_max_sub_layers_minus1; i < 8; i++) {
+				uint8_t reserved_zero_2bits = bs.GetWord(2);
+			}
+		}
+		for (int i = 0; i < sps_max_sub_layers_minus1; i++) {
+			if (sub_layer_profile_present_flag[i]) {
+				bs.GetWord(2);// sub_layer_profile_space[i]
+				bs.GetWord(1);// sub_layer_tier_flag[i]
+				bs.GetWord(5);// sub_layer_profile_idc[i]
+				bs.GetWord(32);// sub_layer_profile_compatibility_flag[i][32]
+				bs.GetWord(1);// sub_layer_progressive_source_flag[i]
+				bs.GetWord(1);// sub_layer_interlaced_source_flag[i]
+				bs.GetWord(1);// sub_layer_non_packed_constraint_flag[i]
+				bs.GetWord(1);// sub_layer_frame_only_constraint_flag[i]
+				bs.GetWord(44);// sub_layer_reserved_zero_44bits[i]
+			}
+			if (sub_layer_level_present_flag[i]) {
+				bs.GetWord(8);// sub_layer_level_idc[i]
+			}
+		}
+	}
+	uint32_t sps_seq_parameter_set_id= bs.GetUE(); // "The  value  of sps_seq_parameter_set_id shall be in the range of 0 to 15, inclusive."
+	if (sps_seq_parameter_set_id > 15) {
+		return false;
+	}
+	uint32_t chroma_format_idc = bs.GetUE(); // "The value of chroma_format_idc shall be in the range of 0 to 3, inclusive."
+	if (sps_seq_parameter_set_id > 3) {
+		return false;
+	}
+	if (chroma_format_idc == 3) {
+		bs.GetWord(1);// separate_colour_plane_flag
+	}
+	params.width  = bs.GetUE(); // pic_width_in_luma_samples
+	params.height  = bs.GetUE(); // pic_height_in_luma_samples
+	if (bs.GetWord(1)) {// conformance_window_flag
+		bs.GetUE();  // conf_win_left_offset
+		bs.GetUE();  // conf_win_right_offset
+		bs.GetUE();  // conf_win_top_offset
+		bs.GetUE();  // conf_win_bottom_offset
+	}
+	uint32_t bit_depth_luma_minus8= bs.GetUE();
+	uint32_t bit_depth_chroma_minus8= bs.GetUE();
+	if (bit_depth_luma_minus8 != bit_depth_chroma_minus8) {
+		return false;
+	}
+	//...
+
+
+	return true;
 }

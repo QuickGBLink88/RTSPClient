@@ -138,6 +138,16 @@ public:
 	unsigned int  GetVideoTimeFrequency() { return VTimestampFrequency; }
 	unsigned int  GetAudioTimeFrequency() { return ATimestampFrequency; }
 
+	unsigned long  GetMaxPlayTime() { return fMaxPlayEndTime; }
+
+	unsigned int  GetVideoTimeOffset(unsigned int rtpTimestamp); //获取视频的时间戳（时间单位是毫秒）
+	unsigned int  GetAudioTimeOffset(unsigned int rtpTimestamp); //获取音频的时间戳（时间单位是毫秒）
+
+	unsigned int  GetVideoTimeOffset(); //获取视频的时间戳（时间单位是毫秒）
+	unsigned int  GetAudioTimeOffset(); //获取音频的时间戳（时间单位是毫秒）
+
+	unsigned int  GetTimeBase(); //获取播放起点时间戳(毫秒)
+
 protected:
 	void    SetUrl(const char * szURL);
 
@@ -155,13 +165,14 @@ protected:
 	int     setupStreams(struct MediaSubsession *subsession,int subsessionNum);
 	int     startPlayingStreams(struct MediaSubsession *subsession,int subsessionNum); 
 
-	int     teardownMediaSession();
-	void    resumeStreams();
 	int     pauseMediaSession();
+	void    resumeStreams();
+	int     parsePlayStartEndTime(char* sdpLine);
 	int     playMediaSession(int start,int end);
 	int     SetParametersMediaSession(char *parameters);
 	int     GetParametersMediaSession(char *parameters, bool bNotWaitForResponse = false); 
 
+	int     teardownMediaSession();
 	int     SendOptionsCmd(bool bNotWaitForResponse);
 
 	//接收RTP和RTCP包的函数
@@ -171,14 +182,14 @@ protected:
 	int     handleRead(unsigned char* buffer,unsigned bufferMaxSize,unsigned* bytesRead,unsigned* NextTCPReadSize);
 
 	//从RTP包中拆出H264数据
-	int     rtp_unpackage_H264(unsigned char *inbuf, int len, BOOL & marker, int & nIDR, unsigned char * outbuf, int & total_bytes, int nSeqNo);
+	int     rtp_unpackage_H264(unsigned char *inbuf, int len, BOOL & marker, int & nIDR, unsigned char * outbuf, const int nBufSize, int & total_bytes, int nSeqNo);
 
 
 	//从RTP包中拆出AAC数据
-	int      rtp_unpackage_AAC(unsigned char * bufIn, int recvLen, BOOL  marker, int audioSamprate, unsigned char* pBufOut,  int* pOutLen);
+	int      rtp_unpackage_AAC(unsigned char * bufIn, int recvLen, BOOL  marker, int audioSamprate, unsigned char* pBufOut, const int nBufSize, int* pOutLen);
 
-	int      rtp_unpackage_AMR(unsigned char * bufIn, int recvLen,  unsigned char* pBufOut,  int* pOutLen);
-	int      rtp_unpackage_MP3(unsigned char * bufIn, int recvLen,  unsigned char* pBufOut,  int* pOutLen);
+	int      rtp_unpackage_AMR(unsigned char * bufIn, int recvLen,  unsigned char* pBufOut, const int nBufSize, int* pOutLen);
+	int      rtp_unpackage_MP3(unsigned char * bufIn, int recvLen,  unsigned char* pBufOut, const int nBufSize, int* pOutLen);
 
 	int     blockUntilwriteable(int socket);
 	int     blockUntilReadable(int socket);
@@ -235,7 +246,6 @@ protected:
 
 	char fBaseURL[128]; //RTSP URL地址
 	char fLastSessionId[64];
-	unsigned long fMaxPlayEndTime;
 
 	unsigned VTimestampFrequency;
 	unsigned ATimestampFrequency;
@@ -292,6 +302,13 @@ protected:
 	//time_t  m_ntp_msw_audio; //单位：秒
 	//UINT    m_ntp_lsw_video; //单位：232 picoseconds, 1 second = 1,000,000,000,000 picoseconds
 	//UINT    m_ntp_lsw_audio; //单位：232 picoseconds, 1 second = 1,000,000,000,000 picoseconds
+
+	unsigned long fMaxPlayEndTime;
+
+	unsigned long m_nptPlayBeginTime; //播放NPT起始时间，单位：秒
+	unsigned long m_nptPlayEndTime; //播放NPT结束时间，单位：秒
+
+	PayloadContext  m_PayloadContext;
 
 };
 
