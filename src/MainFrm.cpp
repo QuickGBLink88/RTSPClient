@@ -233,13 +233,17 @@ BOOL CMainFrame::OnCmdMsg(UINT nID, int nCode, void* pExtra, AFX_CMDHANDLERINFO*
 void CMainFrame::OnBnConnect()
 {
 	char szURL[256] = {0};
-	P_GetProfileString(_T("Client"), "URL", szURL, 256); //IPC的Rtsp地址
+	P_GetProfileString(_T("Client"), "URL", szURL, 256); //Rtsp地址
 
 	CConnectServerDlg dlg;
 	dlg.m_strURL = szURL;
 	if(dlg.DoModal() == IDOK)
 	{
-		P_WriteProfileString(_T("Client"), "URL", dlg.m_strURL); //IPC的Rtsp地址
+		P_WriteProfileString(_T("Client"), "URL", dlg.m_strURL); //Rtsp地址
+	}
+	else
+	{
+		return;
 	}
 
 	OnStopReceiveStream(0, 0);
