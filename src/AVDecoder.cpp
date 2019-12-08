@@ -631,9 +631,12 @@ BOOL    CAVDecoder:: OnDecodeVideo(PBYTE inbuf, long inLen, VideoFormat vFormat,
 		}
 	}
 
-	if(m_nFrameNumber1 == -1  && nFrameType != 1) //等到关键帧到来
+	if(vFormat != VFMT_MPEG4)
 	{
-		return FALSE;
+		if(m_nFrameNumber1 == -1  && nFrameType != 1) //等到关键帧到来
+		{
+			return FALSE;
+		}
 	}
 
 	m_bInited = TRUE;

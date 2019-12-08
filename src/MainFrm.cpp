@@ -18,6 +18,7 @@
 #include "StatisticsViewDlg.h"
 #include "PProfile.h"
 #include "StatisticsViewDlg.h"
+#include "ConnectServerDlg.h"
 #include <math.h>
 #include "rtsp.h"
 
@@ -143,7 +144,7 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
 	//	return -1;
 	//}
 
-	SetWindowText("RTSP Player (https://blog.csdn.net/quickgblink)");
+	SetWindowText("RTSP Player (quickgblink)");
 
 	RECT rc;
 	GetClientRect(&rc);
@@ -231,6 +232,15 @@ BOOL CMainFrame::OnCmdMsg(UINT nID, int nCode, void* pExtra, AFX_CMDHANDLERINFO*
 
 void CMainFrame::OnBnConnect()
 {
+	char szURL[256] = {0};
+	P_GetProfileString(_T("Client"), "URL", szURL, 256); //IPC的Rtsp地址
+
+	CConnectServerDlg dlg;
+	dlg.m_strURL = szURL;
+	if(dlg.DoModal() == IDOK)
+	{
+		P_WriteProfileString(_T("Client"), "URL", dlg.m_strURL); //IPC的Rtsp地址
+	}
 
 	OnStopReceiveStream(0, 0);
 	OnStartReceiveStream(0, 0);
@@ -772,7 +782,7 @@ LRESULT  CMainFrame:: OnStartReceiveStream(WPARAM wParam, LPARAM lParam)
 	CString strURL = szURL;
 	if(!(strURL.GetLength() > 7 && strURL.Left(7).CompareNoCase("rtsp://") == 0))
 	{
-		MessageBox("RTSP URL不正确", "错误", MB_OK||MB_ICONWARNING);
+		MessageBox("解析RTSP URL错误，URL格式不正确", "错误", MB_OK||MB_ICONWARNING);
 		return 1;
 	}
 
